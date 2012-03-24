@@ -259,7 +259,7 @@ regex_maps = [
     (re.compile('[ \t\r]+\n'),'\n'),
     (re.compile('[ \t\r]+\n'),'\n'),
     (re.compile('\*\*(?P<t>[^\s\*]+( +[^\s\*]+)*)\*\*'),'<strong>\g<t></strong>'),
-    (re.compile("''(?P<t>[^\s']+( +[^\s']+)*)''"),'<i>\g<t></i>'),
+    (re.compile("''(?P<t>[^\s']+( +[^\s']+)*)''"),'<em>\g<t></em>'),
     (re.compile('^#{6} (?P<t>[^\n]+)',re.M),'\n\n<<h6>\g<t></h6>\n'),
     (re.compile('^#{5} (?P<t>[^\n]+)',re.M),'\n\n<<h5>\g<t></h5>\n'),
     (re.compile('^#{4} (?P<t>[^\n]+)',re.M),'\n\n<<h4>\g<t></h4>\n'),
@@ -309,7 +309,7 @@ def render(text,extra={},allowed={},sep='p'):
     >>> render('this is\\n### a subsubsection\\nparagraph')
     '<p>this is</p><h3>a subsubsection</h3><p>paragraph</p>'
     >>> render('**hello world**')
-    '<p><b>hello world</b></p>'
+    '<p><strong>hello world</strong></p>'
     >>> render('``hello world``')
     '<code class="">hello world</code>'
     >>> render('``hello world``:python')
@@ -317,9 +317,9 @@ def render(text,extra={},allowed={},sep='p'):
     >>> render('``\\nhello\\nworld\\n``:python')
     '<pre><code class="python">hello\\nworld</code></pre>'
     >>> render("''hello world''")
-    '<p><i>hello world</i></p>'
+    '<p><em>hello world</em></p>'
     >>> render('** hello** **world**')
-    '<p>** hello** <b>world</b></p>'
+    '<p>** hello** <strong>world</strong></p>'
 
     >>> render('- this\\n- is\\n- a list\\n\\nand this\\n- is\\n- another')
     '<ul><li>this</li><li>is</li><li>a list</li></ul><p>and this</p><ul><li>is</li><li>another</li></ul>'
@@ -347,7 +347,7 @@ def render(text,extra={},allowed={},sep='p'):
     '<p><audio src="http://example.com" controls></audio></p>'
 
     >>> render('[[this is a **link** http://example.com]]')
-    '<p><a href="http://example.com">this is a <b>link</b></a></p>'
+    '<p><a href="http://example.com">this is a <strong>link</strong></a></p>'
 
     >>> render("``aaa``:custom",extra=dict(custom=lambda text: 'x'+text+'x'))
     'xaaax'

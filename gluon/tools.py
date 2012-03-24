@@ -17,6 +17,7 @@ import glob
 import os
 import re
 import time
+import traceback
 import smtplib
 import urllib
 import urllib2
@@ -72,9 +73,11 @@ def call_or_redirect(f,*args):
         redirect(f)
 
 def replace_id(url, form):
-    if url and not url[0] == '/' and url[:4] != 'http':
-        return URL(url.replace('[id]', str(form.vars.id)))
-    return url
+    if url:
+        url = url.replace('[id]', str(form.vars.id))
+        if url[0] == '/' or url[:4] == 'http':
+            return url
+    return URL(url)
 
 class Mail(object):
     """
@@ -597,6 +600,8 @@ class Mail(object):
                     xcc['cc'] = cc
                 if bcc:
                     xcc['bcc'] = bcc
+                if reply_to:
+                    xcc['reply_to'] = reply_to
                 from google.appengine.api import mail
                 attachments = attachments and [(a.my_filename,a.my_payload) for a in attachments if not raw]
                 if attachments:
@@ -996,6 +1001,10 @@ class Auth(object):
 
         settings.retrieve_password_onvalidation = []
         settings.reset_password_onvalidation = []
+        settings.reset_password_onaccept = []
+
+        settings.email_case_sensitive = True                                   
+        settings.username_case_sensitive = True
 
         settings.hmac_key = hmac_key
         settings.lock_keys = True
@@ -1279,8 +1288,11 @@ class Auth(object):
                                                    migrate),
                         fake_migrate=fake_migrate,
                         format='%(username)s'))
-                table.username.requires = (IS_MATCH('[\w\.\-]+'),
-                                           IS_NOT_IN_DB(db, table.username))
+                table.username.requires = \
+                    [IS_MATCH('[\w\.\-]+'),
+                     IS_NOT_IN_DB(db, table.username)]
+                if not self.settings.username_case_sensitive:
+                    table.username.requires.insert(1,IS_LOWER())
             else:
                 table = db.define_table(
                     settings.table_user_name,
@@ -1317,6 +1329,8 @@ class Auth(object):
             table.email.requires = \
                 [IS_EMAIL(error_message=self.messages.invalid_email),
                  IS_NOT_IN_DB(db, table.email)]
+            if not self.settings.email_case_sensitive:
+                table.email.requires.insert(1,IS_LOWER())
             table.registration_key.default = ''
         settings.table_user = db[settings.table_user_name]
         if not settings.table_group_name in db.tables:
@@ -3803,11 +3817,14 @@ class Service(object):
         def return_response(id, result):
             return serializers.json({'version': '1.1',
                 'id': id, 'result': result, 'error': None})
-        def return_error(id, code, message):
+        def return_error(id, code, message, data=None):
+            error = {'name': 'JSONRPCError',
+                     'code': code, 'message': message}
+            if data is not None:
+                error['data'] = data
             return serializers.json({'id': id,
                                      'version': '1.1',
-                                     'error': {'name': 'JSONRPCError',
-                                        'code': code, 'message': message}
+                                     'error': error,
                                      })
 
         request = current.request
@@ -3827,7 +3844,10 @@ class Service(object):
             return return_error(id, e.code, e.info)
         except BaseException:
             etype, eval, etb = sys.exc_info()
-            return return_error(id, 100, '%s: %s' % (etype.__name__, eval))
+            code = 100
+            message = '%s: %s' % (etype.__name__, eval)
+            data = request.is_local and traceback.format_tb(etb)
+            return return_error(id, code, message, data)
         except:
             etype, eval, etb = sys.exc_info()
             return return_error(id, 100, 'Exception %s: %s' % (etype, eval))
@@ -4151,9 +4171,10 @@ class PluginManager(object):
         return key in self.__dict__
 
 class Expose(object):
-    def __init__(self,base=None):
+    def __init__(self,base=None,basename='base'):
         current.session.forget()
         base = base or os.path.join(current.request.folder,'static')
+        self.basename = basename
         args = self.args = current.request.raw_args and \
             current.request.raw_args.split('/') or []
         filename = os.path.join(base,*args)
@@ -4167,10 +4188,11 @@ class Expose(object):
                             if os.path.isdir(f) and not self.isprivate(f)]
         self.filenames = [f[len(path)-1:] for f in sorted(glob.glob(path)) \
                             if not os.path.isdir(f) and not self.isprivate(f)]
-    def breadcrumbs(self):
+
+    def breadcrumbs(self, basename):
         path = []
         span = SPAN()
-        span.append(A('base',_href=URL()))
+        span.append(A(basename,_href=URL()))
         span.append('/')
         args = current.request.raw_args and \
             current.request.raw_args.split('/') or []
@@ -4179,15 +4201,18 @@ class Expose(object):
             span.append(A(arg,_href=URL(args='/'.join(path))))
             span.append('/')
         return span
+
     def table_folders(self):
         return TABLE(*[TR(TD(A(folder,_href=URL(args=self.args+[folder])))) \
                            for folder in self.folders])    
     @staticmethod
     def isprivate(f):
         return 'private' in f or f.startswith('.') or f.endswith('~')
+
     @staticmethod
     def isimage(f):
         return f.rsplit('.')[-1].lower() in ('png','jpg','jpeg','gif','tiff')
+
     def table_files(self,width=160):
         return TABLE(*[TR(TD(A(f,_href=URL(args=self.args+[f]))),
                           TD(IMG(_src=URL(args=self.args+[f]),
@@ -4196,11 +4221,12 @@ class Expose(object):
                            for f in self.filenames])
     def xml(self):
         return DIV(
-            H2(self.breadcrumbs()),
+            H2(self.breadcrumbs(self.basename)),
             H3('Folders'),
             self.table_folders(),
             H3('Files'),
             self.table_files()).xml()
+
 
 if __name__ == '__main__':
     import doctest
