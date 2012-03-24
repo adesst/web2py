@@ -6286,7 +6286,7 @@ def index():
         singular = args.get('singular',tablename.replace('_',' ').capitalize())
         plural = args.get('plural',pluralize(singular.lower()).capitalize())
         lowertablename = tablename.lower()
-
+        print lowertablename
         if tablename.startswith('_') or hasattr(self,lowertablename) or \
                 regex_python_keywords.match(tablename):
             raise SyntaxError, 'invalid table name: %s' % tablename
@@ -6510,7 +6510,6 @@ def Reference_pickler(data):
     return (Reference_unpickler, (marshal_dump,))
 
 copy_reg.pickle(Reference, Reference_pickler, Reference_unpickler)
-
 
 class Table(dict):
 

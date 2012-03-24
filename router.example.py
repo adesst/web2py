@@ -100,6 +100,7 @@ routers = dict(
     # base router
     BASE = dict(
         default_application = 'welcome',
+#        default_application = 'gaol',
     ),
 )
 

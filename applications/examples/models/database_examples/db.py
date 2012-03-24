@@ -5,6 +5,7 @@
 if request.controller.endswith('_examples'): response.generic_patterns.append('*')
 
 from gluon.settings import settings
+from gluon.contrib.pyfpdf import FPDF, HTMLMixin
 
 # if running on Google App Engine
 if settings.web2py_runtime_gae:
@@ -70,3 +71,20 @@ db.person.email.requires = [IS_EMAIL(), IS_NOT_IN_DB(db, 'person.email')]
 db.dog.name.requires = IS_NOT_EMPTY()
 db.dog.type.requires = IS_IN_SET(('small', 'medium', 'large'))
 db.purchase.quantity.requires = IS_INT_IN_RANGE(0, 10)
+
+class MyFPDF(FPDF, HTMLMixin):
+  
+
+    def header(self):
+        self.set_font('Arial','B',15)
+        self.cell(0,10, response.title ,1,0,'C')
+        self.ln(20)
+        
+    def footer(self):
+        self.set_y(-15)
+        self.set_font('Arial','I',8)
+        txt = 'Page %s of %s' % (self.page_no(), self.alias_nb_pages())
+        self.cell(0,10,txt,1,0,'C')
+ 
+
+
