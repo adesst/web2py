@@ -163,7 +163,8 @@ class CacheInRam(CacheAbstract):
         self.locker.release()
 
     def __call__(self, key, f,
-                time_expire = DEFAULT_TIME_EXPIRE):
+                 time_expire = DEFAULT_TIME_EXPIRE,
+                 destroyer = None):
         """
         Attention! cache.ram does not copy the cached object. It just stores a reference to it.
         Turns out the deepcopying the object has some problems:
@@ -179,6 +180,8 @@ class CacheInRam(CacheAbstract):
         item = self.storage.get(key, None)
         if item and f is None:
             del self.storage[key]
+            if destroyer:
+                destroyer(item[1])
         self.storage[CacheAbstract.cache_stats_name]['hit_total'] += 1
         self.locker.release()
 
@@ -186,6 +189,8 @@ class CacheInRam(CacheAbstract):
             return None
         if item and (dt is None or item[0] > time.time() - dt):
             return item[1]
+        elif item and (item[0] < time.time() - dt) and destroyer:
+            destroyer(item[1])
         value = f()
 
         self.locker.acquire()
@@ -364,6 +369,8 @@ class Cache(object):
     - self.disk is an instance of CacheOnDisk
     """
 
+    autokey = ':%(name)s:%(args)s:%(vars)s'
+
     def __init__(self, request):
         """
         Parameters
@@ -389,9 +396,9 @@ class Cache(object):
                 logger.warning('no cache.disk (AttributeError)')
 
     def __call__(self,
-                key = None,
-                time_expire = DEFAULT_TIME_EXPIRE,
-                cache_model = None):
+                 key = None,
+                 time_expire = DEFAULT_TIME_EXPIRE,
+                 cache_model = None):
         """
         Decorator function that can be used to cache any function/method.
 
@@ -427,8 +434,9 @@ class Cache(object):
             cache_model = self.ram
 
         def tmp(func):
-            def action():
-                return cache_model(key, func, time_expire)
+            def action(*a,**b):
+                key2 = key.replace('%(name)s',func.__name__).replace('%(args)s',str(a)).replace('%(vars)s',str(b))
+                return cache_model(key2, lambda a=a,b=b:func(*a,**b), time_expire)
             action.__name___ = func.__name__
             action.__doc__ = func.__doc__
             return action

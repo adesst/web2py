@@ -226,17 +226,22 @@ except ImportError:
 if not 'google' in drivers:
 
     try:
-        from pysqlite2 import dbapi2 as sqlite3
-        drivers.append('pysqlite2')
-    except ImportError:
+        # first try pysqlite2 else try sqlite3
         try:
+            from pysqlite2 import dbapi2 as sqlite3
+            drivers.append('pysqlite2')
+        except ImportError:
             from sqlite3 import dbapi2 as sqlite3
             drivers.append('SQLite3')
-        except ImportError:
-            logger.debug('no sqlite3 or pysqlite2.dbapi2 driver')
+    except ImportError:
+        logger.debug('no sqlite3 or pysqlite2.dbapi2 driver')
 
     try:
-        import contrib.pymysql as pymysql
+        # first try contrib driver, then from site-packages (if installed)
+        try:
+            import contrib.pymysql as pymysql
+        except ImportError:
+            import pymysql
         drivers.append('pymysql')
     except ImportError:
         logger.debug('no pymysql driver')
@@ -2732,9 +2737,6 @@ class FireBirdEmbeddedAdapter(FireBirdAdapter):
                                    user=credential_decoder(user),
                                    password=credential_decoder(password),
                                    charset=charset))
-        #def connect(driver_args=driver_args):
-        #    return kinterbasdb.connect(**driver_args)
-
         def connect(driver_args=driver_args):
             return self.driver.connect(**driver_args)
         self.pool_connection(connect)
@@ -7512,6 +7514,7 @@ class Field(Expression):
         compute=None,
         custom_store=None,
         custom_retrieve=None,
+        custom_retrieve_fileproperties=None,
         custom_delete=None,
         ):
         self.db = None
@@ -7557,6 +7560,7 @@ class Field(Expression):
         self.isattachment = True
         self.custom_store = custom_store
         self.custom_retrieve = custom_retrieve
+        self.custom_retrieve_fileproperties = custom_retrieve_fileproperties
         self.custom_delete = custom_delete
         if self.label is None:
             self.label = fieldname.replace('_',' ').title()
@@ -7619,14 +7623,11 @@ class Field(Expression):
                 raise http.HTTP(404)
         if self.authorize and not self.authorize(row):
             raise http.HTTP(403)
-        try:
-            m = regex_content.match(name)
-            if not m or not self.isattachment:
-                raise TypeError, 'Can\'t retrieve %s' % name
-            filename = base64.b16decode(m.group('name'), True)
-            filename = regex_cleanup_fn.sub('_', filename)
-        except (TypeError, AttributeError):
-            filename = name
+        m = regex_content.match(name)
+        if not m or not self.isattachment:
+            raise TypeError, 'Can\'t retrieve %s' % name
+        fileproperties = self.retrieve_fileproperties(name,path)
+        filename = fileproperties['filename']
         if isinstance(self.uploadfield, str):  # ## if file is in DB
             return (filename, cStringIO.StringIO(row[self.uploadfield] or ''))
         elif isinstance(self.uploadfield,Field):
@@ -7634,6 +7635,25 @@ class Field(Expression):
             query = self.uploadfield == name
             data = self.uploadfield.table(query)[blob_uploadfield_name]
             return (filename, cStringIO.StringIO(data))
+        else:
+            # ## if file is on filesystem
+            return (filename, open(os.path.join(fileproperties['path'], name), 'rb'))
+
+    def retrieve_fileproperties(self, name, path=None):
+        if self.custom_retrieve_fileproperties:
+            return self.custom_retrieve_fileproperties(name, path)
+        try:
+            m = regex_content.match(name)
+            if not m or not self.isattachment:
+                raise TypeError, 'Can\'t retrieve %s fileproperties' % name
+            filename = base64.b16decode(m.group('name'), True)
+            filename = regex_cleanup_fn.sub('_', filename)
+        except (TypeError, AttributeError):
+            filename = name
+        if isinstance(self.uploadfield, str):  # ## if file is in DB
+            return dict(path=None,filename=filename)
+        elif isinstance(self.uploadfield,Field):
+            return dict(path=None,filename=filename)
         else:
             # ## if file is on filesystem
             if path:
@@ -7647,7 +7667,8 @@ class Field(Expression):
                 f = m.group('field')
                 u = m.group('uuidkey')
                 path = os.path.join(path,"%s.%s" % (t,f),u[:2])
-            return (filename, open(os.path.join(path, name), 'rb'))
+            return dict(path=path,filename=filename)
+        
 
     def formatter(self, value):
         if value is None or not self.requires:
