@@ -537,6 +537,12 @@ class AutocompleteWidget(object):
                  orderby=None, limitby=(0,10),
                  keyword='_autocomplete_%(fieldname)s',
                  min_length=2):
+
+        self.help_fields = kwargs.get('help_fields',[])
+        self.help_string = kwargs.get('help_string',None)
+        if self.help_fields and not self.help_string:
+            self.help_string = ' '.join('%%(%s)s' for f in self.help_fields)
+
         self.request = request
         self.keyword = keyword % dict(fieldname=field.name)
         self.db = db or field._db
@@ -554,7 +560,9 @@ class AutocompleteWidget(object):
             self.callback()
         else:
             self.url = request
+
     def callback(self):
+
         if self.keyword in self.request.vars:
             field = self.fields[0]
             rows = self.db(field.like(self.request.vars[self.keyword]+'%'))\
@@ -562,11 +570,15 @@ class AutocompleteWidget(object):
             if rows:
                 if self.is_reference:
                     id_field = self.fields[1]
+                    if self.help_fields:
+                        options = [OPTION(self.help_string % dict([(h.name,s[h.name]) for h in self.fields[:1]+self.help_fields]),
+                                          _value=s[id_field.name], _selected=(k==0)) for k,s in enumerate(rows)]
+                    else:
+                        options = [OPTION(s[field.name],_value=s[id_field.name],
+                                          _selected=(k==0)) for k,s in enumerate(rows)]
                     raise HTTP(200,SELECT(_id=self.keyword,_class='autocomplete',
                                           _size=len(rows),_multiple=(len(rows)==1),
-                                          *[OPTION(s[field.name],_value=s[id_field.name],
-                                                   _selected=(k==0)) \
-                                                for k,s in enumerate(rows)]).xml())
+                                          *options).xml())
                 else:
                     raise HTTP(200,SELECT(_id=self.keyword,_class='autocomplete',
                                           _size=len(rows),_multiple=(len(rows)==1),
@@ -574,8 +586,8 @@ class AutocompleteWidget(object):
                                                    _selected=(k==0)) \
                                                 for k,s in enumerate(rows)]).xml())
             else:
-
                 raise HTTP(200,'')
+
     def __call__(self,field,value,**attributes):
         default = dict(
             _type = 'text',
@@ -993,7 +1005,7 @@ class SQLFORM(FORM):
         elif callable(self.formstyle):
             table = TABLE()
             for id,a,b,c in xfields:
-                raw_b = self.field_parent[id] = b 
+                raw_b = self.field_parent[id] = b
                 newrows = self.formstyle(id,a,raw_b,c)
                 if type(newrows).__name__ != "tuple":
                     newrows = [newrows]
@@ -1376,8 +1388,8 @@ class SQLFORM(FORM):
           var k=jQuery('#web2py_keywords');
           var v=k.val();
           if(aggregator=='new') k.val(s); else k.val((v?(v+' '+ aggregator +' '):'')+s);
-          jQuery('#w2p_query_panel').slideUp();          
-        }      
+          jQuery('#w2p_query_panel').slideUp();
+        }
         """)
         return CAT(
             INPUT(
@@ -1823,7 +1835,7 @@ class SQLFORM(FORM):
                                 value = A('File',
                                           _href='%s/%s' % (upload, value))
                         else:
-                            value = ''                            
+                            value = ''
                     elif isinstance(value,str):
                         value = truncate_string(value,maxlength)
                     else:
@@ -1944,7 +1956,7 @@ class SQLFORM(FORM):
                     previous_tablename,previous_fieldname,previous_id = \
                         tablename,fieldname,id
                     try:
-                        format = db[referee]._format 
+                        format = db[referee]._format
                         if callable(format): name = format(record)
                         else: name = format % record
                     except TypeError:
@@ -2279,6 +2291,7 @@ class SQLTABLE(TABLE):
         return css
 
 form_factory = SQLFORM.factory # for backward compatibility, deprecated
+
 
 
 

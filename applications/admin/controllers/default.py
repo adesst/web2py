@@ -26,6 +26,17 @@ if FILTER_APPS and request.args(0) and not request.args(0) in FILTER_APPS:
     session.flash = T('disabled in demo mode')
     redirect(URL('site'))
 
+def count_lines(data):
+    return len([line for line in data.split('\n') if line.strip() and not line.startswith('#')])
+
+def log_progress(app,mode='EDIT',filename=None,progress=0):
+    progress_file = os.path.join(apath(app, r=request), 'progress.log')
+    now = str(request.now)[:19]
+    if not os.path.exists(progress_file):
+        open(progress_file,'w').write('[%s] START\n' % now)
+    if filename:
+        open(progress_file,'a').write('[%s] %s %s: %s\n' % (now,mode,filename,progress))
+
 def safe_open(a,b):
     if DEMO_MODE and 'w' in b:
         class tmp:
@@ -49,7 +60,8 @@ def safe_write(a, value, b='w'):
 
 def get_app(name=None):
     app = name or request.args(0)
-    if app and (not MULTI_USER_MODE or db(db.app.name==app)(db.app.owner==auth.user.id).count()):
+    if app and (not MULTI_USER_MODE or is_manager() or \
+                    db(db.app.name==app)(db.app.owner==auth.user.id).count()):
         return app
     session.flash = 'App does not exist or your are not authorized'
     redirect(URL('site'))
@@ -158,6 +170,7 @@ def site():
         if app_create(appname, request):
             if MULTI_USER_MODE:
                 db.app.insert(name=appname,owner=auth.user.id)
+            log_progress(appname)
             session.flash = T('new application "%s" created', appname)
             redirect(URL('design',args=appname))
         else:
@@ -190,6 +203,9 @@ def site():
                                     overwrite=request.vars.overwrite_check)
         if f and installed:
             msg = 'application %(appname)s installed with md5sum: %(digest)s'
+            if MULTI_USER_MODE:
+                db.app.insert(name=appname,owner=auth.user.id)
+            log_progress(appname)
             session.flash = T(msg, dict(appname=appname,
                                         digest=md5_hash(installed)))
         elif f and request.vars.overwrite_check:
@@ -216,6 +232,22 @@ def site():
 
     return dict(app=None, apps=apps, myversion=myversion)
 
+
+def report_progress(app):
+    import datetime
+    progress_file = os.path.join(apath(app, r=request), 'progress.log')
+    regex = re.compile('\[(.*?)\][^\:]+\:\s+(\-?\d+)')
+    if not os.path.exists(progress_file):
+        return []
+    matches = regex.findall(open(progress_file,'r').read())
+    events,counter = [],0
+    for m in matches:
+        if not m: continue
+        days = -(request.now - datetime.datetime.strptime(m[0],'%Y-%m-%d %H:%M:%S')).days
+        counter += int(m[1])
+        events.append([days,counter])
+    return events
+                       
 
 def pack():
     app = get_app()
@@ -328,7 +360,10 @@ def delete():
         redirect(URL(sender))
     elif 'delete' in request.vars:
         try:
-            os.unlink(apath(filename, r=request))
+            full_path = apath(filename, r=request)
+            lineno = count_lines(open(full_path,'r').read())
+            os.unlink(full_path)
+            log_progress(app,'DELETE',filename,progress=-lineno)
             session.flash = T('file "%(filename)s" deleted',
                               dict(filename=filename))
         except Exception:
@@ -444,6 +479,7 @@ def edit():
             else:
                 redirect(URL('site'))
 
+        lineno_old = count_lines(data)
         file_hash = md5_hash(data)
         saved_on = time.ctime(os.stat(path)[stat.ST_MTIME])
 
@@ -461,6 +497,8 @@ def edit():
             safe_write(path + '.bak', data)
             data = request.vars.data.replace('\r\n', '\n').strip() + '\n'
             safe_write(path, data)
+            lineno_new = count_lines(data)
+            log_progress(app,'EDIT',filename,progress=lineno_new-lineno_old)
             file_hash = md5_hash(data)
             saved_on = time.ctime(os.stat(path)[stat.ST_MTIME])
             response.flash = T('file saved on %s', saved_on)
@@ -679,7 +717,7 @@ def about():
     # ## check if file is not there
     about = safe_read(apath('%s/ABOUT' % app, r=request))
     license = safe_read(apath('%s/LICENSE' % app, r=request))
-    return dict(app=app, about=MARKMIN(about), license=MARKMIN(license))
+    return dict(app=app, about=MARKMIN(about), license=MARKMIN(license),progress=report_progress(app))
 
 
 def design():
@@ -996,6 +1034,7 @@ def create_file():
             raise SyntaxError
 
         safe_write(full_filename, text)
+        log_progress(app,'CREATE',filename)
         session.flash = T('file "%(filename)s" created',
                           dict(filename=full_filename[len(path):]))
         redirect(URL('edit',
@@ -1041,7 +1080,10 @@ def upload_file():
         if not os.path.exists(dirpath):
             os.makedirs(dirpath)
 
-        safe_write(filename, request.vars.file.file.read(), 'wb')
+        data = request.vars.file.file.read()
+        lineno = count_lines(data)
+        safe_write(filename, data, 'wb')
+        log_progress(app,'UPLOAD',filename,lineno)
         session.flash = T('file "%(filename)s" uploaded',
                           dict(filename=filename[len(path):]))
     except Exception:
@@ -1350,4 +1392,27 @@ def reload_routes():
     gluon.rewrite.load()
     redirect(URL('site'))
 
+
+def manage_students():
+    if not (MULTI_USER_MODE and is_manager()):
+        session.flash = 'Not Authorized'
+        redirect(URL('site'))
+    db.auth_user.registration_key.writable = True
+    grid = SQLFORM.grid(db.auth_user)
+    return locals()
+
+def bulk_register():
+    if not (MULTI_USER_MODE and is_manager()):
+        session.flash = 'Not Authorized'
+        redirect(URL('site'))
+    form = SQLFORM.factory(Field('emails','text'))
+    if form.process().accepted:
+        emails = [x.strip() for x in form.vars.emails.split('\n') if x.strip()]
+        n = 0
+        for email in emails:
+            if not db.auth_user(email=email):
+                n += db.auth_user.insert(email = email) and 1 or 0
+        session.flash = T('%s students registered',n)
+        redirect(URL('site'))
+    return locals()
 

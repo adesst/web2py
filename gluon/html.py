@@ -190,7 +190,7 @@ def URL(
 
         >>> str(URL(a='a', c='c', f='f', vars={'id' : '%(id)d' }, url_encode=True))
         '/a/c/f?id=%25%28id%29d'
-        
+
         >>> str(URL(a='a', c='c', f='f', anchor='%(id)d', url_encode=False))
         '/a/c/f#%(id)d'
 
@@ -783,7 +783,7 @@ class DIV(XmlComponent):
                 c.latest = self.latest
                 c.session = self.session
                 c.formname = self.formname
-                c['hideerror']=hideerror
+                if hideerror: c['hideerror'] = hideerror
                 newstatus = c._traverse(status,hideerror) and newstatus
 
         # for input, textarea, select, option
@@ -1423,7 +1423,7 @@ class CODE(DIV):
         link = self['link']
         counter = self.attributes.get('counter', 1)
         highlight_line = self.attributes.get('highlight_line', None)
-        context_lines = self.attributes.get('context_lines', None) 
+        context_lines = self.attributes.get('context_lines', None)
         styles = self['styles'] or {}
         return highlight(
             join(self.components),
@@ -2355,6 +2355,7 @@ class MARKMIN(XmlComponent):
 if __name__ == '__main__':
     import doctest
     doctest.testmod()
+
 
 
 

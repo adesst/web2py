@@ -196,6 +196,7 @@ class Mail(object):
             mail.settings.encrypt = True
             mail.settings.x509_sign_keyfile = None
             mail.settings.x509_sign_certfile = None
+            mail.settings.x509_nocerts = False
             mail.settings.x509_crypt_certfiles = None
 
             cipher_type       : None
@@ -207,6 +208,7 @@ class Mail(object):
                              ... x509 only ...
             x509_sign_keyfile : the signers private key filename (PEM format)
             x509_sign_certfile: the signers certificate filename (PEM format)
+            x509_nocerts      : if True then no attached certificate in mail
             x509_crypt_certfiles: the certificates file to encrypt the messages
                                   with can be a file name or a list of
                                   file names (PEM format)
@@ -229,6 +231,7 @@ class Mail(object):
         settings.encrypt = True
         settings.x509_sign_keyfile = None
         settings.x509_sign_certfile = None
+        settings.x509_nocerts = False
         settings.x509_crypt_certfiles = None
         settings.debug = False
         settings.lock_keys = True
@@ -499,36 +502,47 @@ class Mail(object):
         #######################################################
         elif cipher_type == 'x509':
             if not sign and not encrypt:
-                self.error="No sign and no encrypt is set but cipher type to x509"
+                self.error = "No sign and no encrypt is set but cipher type to x509"
                 return False
-            x509_sign_keyfile=self.settings.x509_sign_keyfile
+            x509_sign_keyfile = self.settings.x509_sign_keyfile
             if self.settings.x509_sign_certfile:
-                x509_sign_certfile=self.settings.x509_sign_certfile
+                x509_sign_certfile = self.settings.x509_sign_certfile
             else:
                 # if there is no sign certfile we'll assume the
                 # cert is in keyfile
-                x509_sign_certfile=self.settings.x509_sign_keyfile
+                x509_sign_certfile = self.settings.x509_sign_keyfile
             # crypt certfiles could be a string or a list
-            x509_crypt_certfiles=self.settings.x509_crypt_certfiles
-
+            x509_crypt_certfiles = self.settings.x509_crypt_certfiles
+            x509_nocerts = self.settings.x509_nocerts
 
             # need m2crypto
-            from M2Crypto import BIO, SMIME, X509
-            msg_bio = BIO.MemoryBuffer(payload_in.as_string())
+            try:
+                from M2Crypto import BIO, SMIME, X509
+            except Exception, e:
+                self.error = "Can't load M2Crypto module"
+                return False
+            msg_bio = BIO.MemoryBuffer( payload_in.as_string() )
             s = SMIME.SMIME()
 
             #                   SIGN
             if sign:
                 #key for signing
                 try:
-                    s.load_key(x509_sign_keyfile, x509_sign_certfile, callback=lambda x: sign_passphrase)
-                    if encrypt:
-                        p7 = s.sign(msg_bio)
+                    s.load_key( x509_sign_keyfile, x509_sign_certfile, callback = lambda x: sign_passphrase )
+                except Exception, e:
+                    self.error = "Something went wrong on certificate / private key loading: <%s>" % str( e )
+                    return False
+                try:
+                    if x509_nocerts:
+                        flags = SMIME.PKCS7_NOCERTS
                     else:
-                        p7 = s.sign(msg_bio,flags=SMIME.PKCS7_DETACHED)
-                    msg_bio = BIO.MemoryBuffer(payload_in.as_string()) # Recreate coz sign() has consumed it.
-                except Exception,e:
-                    self.error="Something went wrong on signing: <%s>" %str(e)
+                        flags = 0
+                    if not encrypt:
+                        flags += SMIME.PKCS7_DETACHED
+                    p7 = s.sign( msg_bio, flags = flags )
+                    msg_bio = BIO.MemoryBuffer( payload_in.as_string() ) # Recreate coz sign() has consumed it.
+                except Exception, e:
+                    self.error = "Something went wrong on signing: <%s> %s" % ( str( e ), str( flags ) )
                     return False
 
             #                   ENCRYPT
@@ -1003,7 +1017,7 @@ class Auth(object):
         settings.reset_password_onvalidation = []
         settings.reset_password_onaccept = []
 
-        settings.email_case_sensitive = True                                   
+        settings.email_case_sensitive = True
         settings.username_case_sensitive = True
 
         settings.hmac_key = hmac_key
@@ -1199,7 +1213,7 @@ class Auth(object):
 
         li_next = '?_next='+urllib.quote(self.settings.login_next)
         lo_next = '?_next='+urllib.quote(self.settings.logout_next)
-            
+
         if self.user_id:
             logout=A(T('Logout'),_href=action+'/logout'+lo_next)
             profile=A(T('Profile'),_href=action+'/profile'+next)
@@ -1339,7 +1353,7 @@ class Auth(object):
                 Field('role', length=512, default='',
                         label=self.messages.label_role),
                 Field('description', 'text',
-                        label=self.messages.label_description),                
+                        label=self.messages.label_description),
                 *settings.extra_fields.get(settings.table_group_name,[]),
                 **dict(
                     migrate=self.__get_migrate(
@@ -1829,7 +1843,7 @@ class Auth(object):
             session.flash = self.messages.logged_in
 
         self.update_groups()
-            
+
         # how to continue
         if self.settings.login_form == self:
             if accepted_form:
@@ -1974,7 +1988,7 @@ class Auth(object):
                 session.auth = Storage(user=user, last_visit=request.now,
                                        expiration=self.settings.expiration,
                                        hmac_key = web2py_uuid())
-                self.user = user              
+                self.user = user
                 self.update_groups()
                 session.flash = self.messages.logged_in
             self.log_event(log, form.vars)
@@ -2309,14 +2323,8 @@ class Auth(object):
             elif user.registration_key in ('pending','disabled','blocked'):
                 session.flash = self.messages.registration_pending
                 redirect(self.url(args=request.args))
-            reset_password_key = str(int(time.time()))+'-' + web2py_uuid()
-
-            if self.settings.mailer.send(to=form.vars.email,
-                                         subject=self.messages.reset_password_subject,
-                                         message=self.messages.reset_password % \
-                                             dict(key=reset_password_key)):
+            if self.email_reset_password(user):
                 session.flash = self.messages.email_sent
-                user.update_record(reset_password_key=reset_password_key)
             else:
                 session.flash = self.messages.unable_to_send_email
             self.log_event(log, user)
@@ -2328,6 +2336,16 @@ class Auth(object):
             redirect(next)
         # old_requires = table_user.email.requires
         return form
+
+    def email_reset_password(self,user):
+        reset_password_key = str(int(time.time()))+'-' + web2py_uuid()
+        if self.settings.mailer.send(to=user.email,
+                                     subject=self.messages.reset_password_subject,
+                                     message=self.messages.reset_password % \
+                                         dict(key=reset_password_key)):
+            user.update_record(reset_password_key=reset_password_key)
+            return True
+        return False
 
     def retrieve_password(
         self,
@@ -4183,7 +4201,7 @@ class Expose(object):
         if not os.path.isdir(filename):
             current.response.headers['Content-Type'] = contenttype(filename)
             raise HTTP(200,open(filename,'rb'),**current.response.headers)
-        self.path = path = os.path.join(filename,'*')        
+        self.path = path = os.path.join(filename,'*')
         self.folders = [f[len(path)-1:] for f in sorted(glob.glob(path)) \
                             if os.path.isdir(f) and not self.isprivate(f)]
         self.filenames = [f[len(path)-1:] for f in sorted(glob.glob(path)) \
@@ -4204,7 +4222,7 @@ class Expose(object):
 
     def table_folders(self):
         return TABLE(*[TR(TD(A(folder,_href=URL(args=self.args+[folder])))) \
-                           for folder in self.folders])    
+                           for folder in self.folders])
     @staticmethod
     def isprivate(f):
         return 'private' in f or f.startswith('.') or f.endswith('~')
@@ -4231,5 +4249,6 @@ class Expose(object):
 if __name__ == '__main__':
     import doctest
     doctest.testmod()
+
 
 

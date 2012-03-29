@@ -111,7 +111,7 @@ def LOAD(c=None, f='index', args=None, vars=None,
          url=None,user_signature=False, timeout=None, times=1,
          content='loading...',**attr):
     """  LOAD a component into the action's document
-    
+
     Timing options:
     -times: An integer or string ("infinity"/"continuous")
     specifies how many times the component is requested
@@ -168,7 +168,7 @@ def LOAD(c=None, f='index', args=None, vars=None,
             other_request[key] = value
         other_request['env'] = Storage()
         for key, value in request.env.items():
-            other_request.env['key'] = value
+            other_request.env[key] = value
         other_request.controller = c
         other_request.function = f
         other_request.extension = extension or request.extension
@@ -688,6 +688,7 @@ def test():
 if __name__ == '__main__':
     import doctest
     doctest.testmod()
+
 
 
 
