@@ -43,7 +43,7 @@ class MyDAL(DAL):
 
         # notice that i added '.' at the end of the schema/database descriptor
         # now you have a _tablename = 'another_database.comment'
-    """
+    """  
     def __init__(self, uri='sqlite://dummy.db',
                  pool_size=0, folder=None,
                  db_codec='UTF-8', check_reserved=None,
@@ -381,6 +381,20 @@ class MyTable(Table):
     _schema = ''
     _use_tablename = ''
 
+    def append_field(self, field):
+        import copy
+        if not isinstance(field, Field):
+            raise MyTableAppendField('field is not instance of Field')
+        field = copy.copy(field)
+        self.fields.append(field.name)
+        self[field.name] = field
+        field.tablename = field._tablename = self._tablename
+        field.table = field._table = self
+        field.db = field._db = self._db
+        if self._db and not field.type in ('text','blob') and \
+                self._db._adapter.maxcharlength < field.length:
+            field.length = self._db._adapter.maxcharlength
+
     def set_schema(self, schema, **kwargs):
         self._schema = str(schema)
         self._use_tablename = self._tablename
@@ -394,4 +408,29 @@ class MyTable(Table):
         elif migrate and _adapter:
             _adapter.create_table(self)
 
-
+    def _listify(self,fields,update=False):
+        new_fields = []
+        new_fields_names = []
+        for name in fields:
+            if not name in self.fields:
+                if name != 'id':
+                    #raise SyntaxError, 'Field %s does not belong to the table' % name
+                    pass
+            else:
+                new_fields.append((self[name],fields[name]))
+                new_fields_names.append(name)
+        for ofield in self:
+            if not ofield.name in new_fields_names:
+                if not update and not ofield.default is None:
+                    new_fields.append((ofield,ofield.default))
+                elif update and not ofield.update is None:
+                    new_fields.append((ofield,ofield.update))
+        for ofield in self:
+            if not ofield.name in new_fields_names and ofield.compute:
+                try:
+                    new_fields.append((ofield,ofield.compute(Row(fields))))
+                except KeyError:
+                    pass
+            if not update and ofield.required and not ofield.name in new_fields_names:
+                raise SyntaxError,'Table: missing required field: %s' % ofield.name
+        return new_fields

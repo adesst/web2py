@@ -131,7 +131,8 @@ class HTML2FPDF(HTMLParser):
             self.pdf.set_x(self.table_offset)
             self.set_style('B',True)
             for cell, bgcolor in self.theader:
-                self.box_shadow(cell[0], cell[1], bgcolor)
+                #self.box_shadow(cell[0], cell[1], bgcolor)
+                self.box_shadow(cell[0], cell[1], None)
                 self.pdf.cell(*cell)
             self.set_style('B',b)
             self.pdf.ln(self.theader[0][0][1])
