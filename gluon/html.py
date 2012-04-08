@@ -261,6 +261,8 @@ def URL(
             else:
                 raise SyntaxError, 'when calling URL, function or function name required'
         elif '/' in f:
+            if f.startswith("/"):
+                f = f[1:]
             items = f.split('/')
             function = f = items[0]
             args = items[1:] + args
@@ -277,7 +279,7 @@ def URL(
     function2 = '%s.%s' % (function,extension or 'html')
 
     if not (application and controller and function):
-        raise SyntaxError, 'not enough information to build the url'
+        raise SyntaxError, 'not enough information to build the url (%s %s %s)' % (application, controller, function)
 
     if args:
         if url_encode:
@@ -2140,7 +2142,7 @@ class MENU(DIV):
 
     def serialize_mobile(self, data, select=None, prefix=''):
         if not select:
-            select = SELECT()
+            select = SELECT(**self.attributes)
         for item in data:
             if item[2]:
                 select.append(OPTION(CAT(prefix, item[0]), _value=item[2], _selected=item[1]))
@@ -2322,18 +2324,23 @@ class MARKMIN(XmlComponent):
     """
     For documentation: http://web2py.com/examples/static/markmin.html
     """
-    def __init__(self, text, extra=None, allowed=None, sep='p'):
+    def __init__(self, text, extra=None, allowed=None, sep='p',
+                 url=None, environment=None):
         self.text = text
         self.extra = extra or {}
         self.allowed = allowed or {}
         self.sep = sep
+        self.url = URL if url==True else url
+        self.environment = environment
 
     def xml(self):
         """
         calls the gluon.contrib.markmin render function to convert the wiki syntax
         """
         from contrib.markmin.markmin2html import render
-        return render(self.text,extra=self.extra,allowed=self.allowed,sep=self.sep)
+        return render(self.text,extra=self.extra,
+                      allowed=self.allowed,sep=self.sep,
+                      URL=self.url, environment=self.environment)
 
     def __str__(self):
         return self.xml()

@@ -1132,14 +1132,16 @@ class Auth(object):
                 return '%(first_name)s %(last_name)s' % user
             except: return id
         self.signature = db.Table(self.db,'auth_signature',
-                                  Field('is_active','boolean',default=True),
+                                  Field('is_active','boolean',
+                                        default=True,
+                                        readable=False, writable=False),
                                   Field('created_on','datetime',
                                         default=request.now,
-                                        writable=False,readable=False),
+                                        writable=False, readable=False),
                                   Field('created_by',
                                         reference_user,
-                                        default=lazy_user,represent=represent,
-                                        writable=False,readable=False,
+                                        default=lazy_user, represent=represent,
+                                        writable=False, readable=False,
                                         ),
                                   Field('modified_on','datetime',
                                         update=request.now,default=request.now,
@@ -1255,7 +1257,47 @@ class Auth(object):
         else:
             return True
 
-    def define_tables(self, username=False, migrate=True, fake_migrate=False):
+    def enable_record_versioning(self, 
+                                 tables,
+                                 archive_db = None,
+                                 archive_names='%(tablename)s_archive',
+                                 current_record='current_record'):
+        """
+        to enable full record vernionioning (including auth tables):
+
+        auth = Auth(db)
+        auth.define_tables(signature=True)
+        # define our own tables
+        db.define_table('mything',Field('name'),auth.signature)
+        auth.enable_record_vernining(tables=db)
+
+        tables can be the db (all table) or a list of tables.
+        only tables with modified_by and modified_on fiels (as created
+        by auth.signature) will have versioning. Old record versions will be 
+        in table 'mything_archive' automatically defined.
+        
+        when you enable enable_record_versioning, records are never
+        deleted but marked with is_active=False.
+
+        enable_record_versioning enables a common_filter for 
+        every table that filters out records with is_active = False
+
+        Important: If you use auth.enable_record_versioning,
+        do not use auth.archive or you will end up with duplicates.
+        auth.archive does explicitely what enable_record_versioning
+        does automatically.
+
+        """
+        tables = [table for table in tables]
+        for table in tables: 
+            if 'modifed_on' in table.fields():
+                table._enable_record_versioning(
+                    archive_db = archive_db,
+                    archive_name = archive_names,
+                    current_record = current_record)
+                
+    def define_tables(self, username=False, signature=None, 
+                      migrate=True, fake_migrate=False):
         """
         to be called unless tables are defined manually
 
@@ -1272,8 +1314,18 @@ class Auth(object):
 
         db = self.db
         settings = self.settings
+        if signature==True:
+            signature_list = [self.signature]
+        elif not signature:
+            signature_list = []
+        elif isinstance(signature,self.db.Table):
+            signature_list = [signature]
+        else:
+            signature_list = signature
         if not settings.table_user_name in db.tables:
             passfield = settings.password_field
+            extra_fields = settings.extra_fields.get(
+                settings.table_user_name,[])+signature_list
             if username or settings.cas_provider:
                 table = db.define_table(
                     settings.table_user_name,
@@ -1296,7 +1348,7 @@ class Auth(object):
                     Field('registration_id', length=512,
                           writable=False, readable=False, default='',
                           label=self.messages.label_registration_id),
-                    *settings.extra_fields.get(settings.table_user_name,[]),
+                    *extra_fields,
                     **dict(
                         migrate=self.__get_migrate(settings.table_user_name,
                                                    migrate),
@@ -1327,7 +1379,7 @@ class Auth(object):
                     Field('registration_id', length=512,
                           writable=False, readable=False, default='',
                           label=self.messages.label_registration_id),
-                    *settings.extra_fields.get(settings.table_user_name,[]),
+                    *extra_fields,
                     **dict(
                         migrate=self.__get_migrate(settings.table_user_name,
                                                    migrate),
@@ -1348,13 +1400,15 @@ class Auth(object):
             table.registration_key.default = ''
         settings.table_user = db[settings.table_user_name]
         if not settings.table_group_name in db.tables:
+            extra_fields = settings.extra_fields.get(
+                settings.table_group_name,[])+signature_list
             table = db.define_table(
                 settings.table_group_name,
                 Field('role', length=512, default='',
                         label=self.messages.label_role),
                 Field('description', 'text',
                         label=self.messages.label_description),
-                *settings.extra_fields.get(settings.table_group_name,[]),
+                *extra_fields,
                 **dict(
                     migrate=self.__get_migrate(
                         settings.table_group_name, migrate),
@@ -1364,13 +1418,15 @@ class Auth(object):
                  % settings.table_group_name)
         settings.table_group = db[settings.table_group_name]
         if not settings.table_membership_name in db.tables:
+            extra_fields = settings.extra_fields.get(
+                settings.table_membership_name,[])+signature_list
             table = db.define_table(
                 settings.table_membership_name,
                 Field('user_id', settings.table_user,
                         label=self.messages.label_user_id),
                 Field('group_id', settings.table_group,
                         label=self.messages.label_group_id),
-                *settings.extra_fields.get(settings.table_membership_name,[]),
+                *extra_fields,
                 **dict(
                     migrate=self.__get_migrate(
                         settings.table_membership_name, migrate),
@@ -1383,6 +1439,8 @@ class Auth(object):
                     '%(role)s (%(id)s)')
         settings.table_membership = db[settings.table_membership_name]
         if not settings.table_permission_name in db.tables:
+            extra_fields = settings.extra_fields.get(
+                settings.table_permission_name,[])+signature_list
             table = db.define_table(
                 settings.table_permission_name,
                 Field('group_id', settings.table_group,
@@ -1393,7 +1451,7 @@ class Auth(object):
                         label=self.messages.label_table_name),
                 Field('record_id', 'integer',default=0,
                         label=self.messages.label_record_id),
-                *settings.extra_fields.get(settings.table_permission_name,[]),
+                *extra_fields,
                 **dict(
                     migrate=self.__get_migrate(
                         settings.table_permission_name, migrate),
@@ -1884,7 +1942,7 @@ class Auth(object):
             cas_user = cas.get_user()
             if cas_user:
                 next = cas.logout_url(next)
-
+                
         current.session.auth = None
         current.session.flash = self.messages.logged_out
         redirect(next)

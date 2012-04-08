@@ -431,23 +431,28 @@ class ConnectionPool(object):
     @staticmethod
     def close_all_instances(action):
         """ to close cleanly databases in a multithreaded environment """
-        if not hasattr(thread, 'instances'):
-            return
-        while thread.instances:
-            instance = thread.instances.pop()
-            if action:
-                getattr(instance, action)()
-            # ## if you want pools, recycle this connection
-            really = True
-            if instance.pool_size:
-                sql_locker.acquire()
-                pool = ConnectionPool.pools[instance.uri]
-                if len(pool) < instance.pool_size:
-                    pool.append(instance.connection)
-                    really = False
-                sql_locker.release()
-            if really:
-                getattr(instance, 'close')()
+        if hasattr(thread, 'instances'):
+            while thread.instances:
+                instance = thread.instances.pop()
+                if action:
+                    if callable(action):
+                        action(instance)
+                    else:
+                        getattr(instance, action)()
+                # ## if you want pools, recycle this connection
+                really = True
+                if instance.pool_size:
+                    sql_locker.acquire()
+                    pool = ConnectionPool.pools[instance.uri]
+                    if len(pool) < instance.pool_size:
+                        pool.append(instance.connection)
+                        really = False
+                    sql_locker.release()
+                if really:
+                    getattr(instance, 'close')()
+            
+        if callable(action):
+            action(None)
         return
 
     def find_or_make_work_folder(self):
@@ -3052,8 +3057,11 @@ class TeradataAdapter(BaseAdapter):
         'time': 'TIME',
         'datetime': 'TIMESTAMP',
         'id': 'INTEGER GENERATED ALWAYS AS IDENTITY',  # Teradata Specific
-        # Modified Constraint syntax for Teradata.
-        'reference TFK': ' CONSTRAINT FK_%(foreign_table)s_PK FOREIGN KEY (%(field_name)s) REFERENCES %(foreign_table)s (%(foreign_key)s)',
+        # Modified Constraint syntax for Teradata.  
+        # Teradata does not support ON DELETE.
+        'reference': 'INT', 
+        'reference FK': ' REFERENCES %(foreign_key)s', 
+        'reference TFK': ' FOREIGN KEY (%(field_name)s) REFERENCES %(foreign_table)s (%(foreign_key)s)', 
         'list:integer': 'CLOB',
         'list:string': 'CLOB',
         'list:reference': 'CLOB',
@@ -6835,6 +6843,7 @@ class Table(dict):
 
         :raises SyntaxError: when a supplied field is of incorrect type.
         """
+
         self._actual = False # set to True by define_table()
         self._tablename = tablename
         self._sequence_name = args.get('sequence_name',None) or \
@@ -6944,6 +6953,31 @@ class Table(dict):
     def update(self,*args,**kwargs):
         raise RuntimeError, "Syntax Not Supported"
 
+    def _enable_record_versioning(self,
+                                  archive_db=None,
+                                  archive_name = '%(tablename)s_archive',
+                                  current_record = 'current_record',
+                                  is_active = 'is_active'):
+        archive_db = archive_db or self._db
+        fieldnames = self.fields()
+        archive_name = archive_name % dict(tablename=self._tablename)
+        field_type = self if archive_db is self._db else 'integer'
+        archive_table = archive_db.define_table(
+            archive_name,
+            Field(current_record,field_type),
+            self)
+        self._before_update.append(
+            lambda qset,fs,at=archive_table,cn=current_record:
+                archive_record(qset,fs,at,cn))
+        if is_active and is_active in fieldnames:
+            self._before_delete.append(
+                lambda qset: qset.update(is_active=False))
+            newquery = lambda query, t=self: t.is_active == True
+            query = self._common_filter
+            if query:
+                newquery = query & newquery
+            self._common_filter = newquery
+                
     def _validate(self,**vars):
         errors = Row()
         for key,value in vars.items():
@@ -7129,7 +7163,7 @@ class Table(dict):
     def insert(self, **fields):
         if any(f(fields) for f in self._before_insert): return 0
         ret =  self._db._adapter.insert(self,self._listify(fields))
-        ret and [f(fields) for f in self._after_insert]
+        ret and [f(fields,ret) for f in self._after_insert]
         return ret
 
     def validate_and_insert(self,**fields):
@@ -7167,7 +7201,7 @@ class Table(dict):
         items = [self._listify(item) for item in items]
         if any(f(item) for item in items for f in self._before_insert):return 0
         ret = self._db._adapter.bulk_insert(self,items)
-        ret and [[f(item) for item in items] for f in self._after_insert]
+        ret and [[f(item,ret[k]) for k,item in enumerate(items)] for f in self._after_insert]
         return ret
 
     def _truncate(self, mode = None):
@@ -7278,6 +7312,16 @@ class Table(dict):
     def on(self, query):
         return Expression(self._db,self._db._adapter.ON,self,query)
 
+def archive_record(qset,fs,archive_table,current_record):
+    tablenames = qset.db._adapter.tables(qset.query)
+    if len(tablenames)!=1: raise RuntimeError, "cannot update join"
+    table = qset.db[tablenames[0]]
+    for row in qset.select():
+        fields = archive_table._filter_fields(row)
+        fields[current_record] = row.id
+        archive_table.insert(**fields)
+    return False
+        
 
 
 class Expression(object):
