@@ -26,7 +26,7 @@ import cStringIO
 from email import MIMEBase, MIMEMultipart, MIMEText, Encoders, Header, message_from_string
 
 from contenttype import contenttype
-from storage import Storage, PickleableStorage, StorageList, Settings, Messages
+from storage import Storage, StorageList, Settings, Messages
 from utils import web2py_uuid
 from fileutils import read_file
 from gluon import *
@@ -929,7 +929,8 @@ class Auth(object):
         settings.registration_requires_approval = False
         settings.login_after_registration = False
         settings.alternate_requires_registration = False
-        settings.create_user_groups = True
+        settings.create_user_groups = "user_%(id)s"
+        settings.everybody_group_id = None
 
         settings.controller = controller
         settings.function = function
@@ -1290,7 +1291,7 @@ class Auth(object):
         """
         tables = [table for table in tables]
         for table in tables: 
-            if 'modifed_on' in table.fields():
+            if 'modified_on' in table.fields():
                 table._enable_record_versioning(
                     archive_db = archive_db,
                     archive_name = archive_names,
@@ -1572,8 +1573,10 @@ class Auth(object):
             user_id = table_user.insert(**table_user._filter_fields(keys))
             user =  self.user = table_user[user_id]
             if self.settings.create_user_groups:
-                group_id = self.add_group("user_%s" % user_id)
+                group_id = self.add_group(self.settings.create_user_groups % user)
                 self.add_membership(group_id, user_id)
+            if self.settings.everybody_group_id:
+                self.add_membership(self.settings.everybody_group_id, user_id)
         return user
 
     def basic(self):
@@ -2015,8 +2018,10 @@ class Auth(object):
                         onvalidation=onvalidation,hideerror=self.settings.hideerror):
             description = self.messages.group_description % form.vars
             if self.settings.create_user_groups:
-                group_id = self.add_group("user_%s" % form.vars.id, description)
+                group_id = self.add_group(self.settings.create_user_groups % form.vars, description)
                 self.add_membership(group_id, form.vars.id)
+            if self.settings.everybody_group_id:
+                self.add_membership(self.settings.everybody_group_id, form.vars.id)
             if self.settings.registration_requires_verification:
                 if not self.settings.mailer or \
                    not self.settings.mailer.send(to=form.vars.email,
@@ -2738,9 +2743,11 @@ class Auth(object):
         returns the group_id of the group uniquely associated to this user
         i.e. role=user:[user_id]
         """
-        if not user_id and self.user:
-            user_id = self.user.id
-        role = 'user_%s' % user_id
+        if user_id:
+            user = self.settings.table_user[user_id]
+        else:
+            user = self.user
+        role = self.settings.create_user_groups % user
         return self.id_group(role)
 
     def has_membership(self, group_id=None, user_id=None, role=None):
@@ -2821,6 +2828,11 @@ class Auth(object):
         if group_id is passed, it checks whether the group has the permission
         """
 
+        if not group_id and self.settings.everybody_group_id and \
+                self.has_permission(
+            name,table_name,record_id,user_id=None,
+            group_id=self.settings.everybody_group_id): return True
+        
         if not user_id and not group_id and self.user:
             user_id = self.user.id
         if user_id:
@@ -2910,16 +2922,27 @@ class Auth(object):
         """
         if not user_id:
             user_id = self.user_id
-        if self.has_permission(name, table, 0, user_id):
+        if isinstance(table,str) and table in self.db.tables():
+            table = self.db[table]
+        if not isinstance(table,str) and\
+                self.has_permission(name, table, 0, user_id):
             return table.id > 0
         db = self.db
         membership = self.settings.table_membership
         permission = self.settings.table_permission
-        return table.id.belongs(db(membership.user_id == user_id)\
-                           (membership.group_id == permission.group_id)\
-                           (permission.name == name)\
-                           (permission.table_name == table)\
-                           ._select(permission.record_id))
+        query = table.id.belongs(
+            db(membership.user_id == user_id)\
+                (membership.group_id == permission.group_id)\
+                (permission.name == name)\
+                (permission.table_name == table)\
+                ._select(permission.record_id))
+        if self.settings.everybody_group_id:
+            query|=table.id.belongs(
+                db(permission.group_id==self.settings.everybody_group_id)\
+                    (permission.name == name)\
+                    (permission.table_name == table)\
+                    ._select(permission.record_id))
+        return query
 
     @staticmethod
     def archive(form,
