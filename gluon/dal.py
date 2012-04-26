@@ -431,23 +431,28 @@ class ConnectionPool(object):
     @staticmethod
     def close_all_instances(action):
         """ to close cleanly databases in a multithreaded environment """
-        if not hasattr(thread, 'instances'):
-            return
-        while thread.instances:
-            instance = thread.instances.pop()
-            if action:
-                getattr(instance, action)()
-            # ## if you want pools, recycle this connection
-            really = True
-            if instance.pool_size:
-                sql_locker.acquire()
-                pool = ConnectionPool.pools[instance.uri]
-                if len(pool) < instance.pool_size:
-                    pool.append(instance.connection)
-                    really = False
-                sql_locker.release()
-            if really:
-                getattr(instance, 'close')()
+        if hasattr(thread, 'instances'):
+            while thread.instances:
+                instance = thread.instances.pop()
+                if action:
+                    if callable(action):
+                        action(instance)
+                    else:
+                        getattr(instance, action)()
+                # ## if you want pools, recycle this connection
+                really = True
+                if instance.pool_size:
+                    sql_locker.acquire()
+                    pool = ConnectionPool.pools[instance.uri]
+                    if len(pool) < instance.pool_size:
+                        pool.append(instance.connection)
+                        really = False
+                    sql_locker.release()
+                if really:
+                    getattr(instance, 'close')()
+            
+        if callable(action):
+            action(None)
         return
 
     def find_or_make_work_folder(self):
@@ -461,6 +466,16 @@ class ConnectionPool(object):
         if False and self.folder and not os.path.exists(self.folder):
             os.mkdir(self.folder)
 
+    def after_connection(self):
+        """ this it is suppoed to be overloaded by adtapters"""
+        pass
+            
+    def reconnect(self):
+        """ allows a thread to re-connect to server or re-pool """
+        self.close_all_instances(False)
+        self.pool_connection(self._connection_function)
+        self.after_connection()
+
     def pool_connection(self, f, cursor=True):
         """
         this function defines: self.connection and self.cursor (iff cursor is True)
@@ -468,6 +483,7 @@ class ConnectionPool(object):
         if the connection is not active (closed by db server) it will loop
         if not self.pool_size or no active connections in pool makes a new one
         """
+        self._connection_function = f
         if not self.pool_size:
             self.connection = f()
             self.cursor = cursor and self.connection.cursor()
@@ -1574,12 +1590,12 @@ class BaseAdapter(ConnectionPool):
 
     def parse_datetime(self, value, field_type):
         if not isinstance(value, datetime.datetime):
-            (y, m, d) = map(int,str(value)[:10].strip().split('-'))
-            time_items = map(int,str(value)[11:19].strip().split(':')[:3])
-            if len(time_items) == 3:
-                (h, mi, s) = time_items
-            else:
-                (h, mi, s) = time_items + [0]
+            date_part, time_part = (str(value).replace('T',' ')+' ').split(' ',1)
+            (y, m, d) = map(int,date_part.split('-'))
+            time_parts = time_part and time_part.split(':')[:3] or (0,0,0)
+            while len(time_parts)<3: time_parts.append(0)
+            time_items = map(int,time_parts)
+            (h, mi, s) = time_items
             value = datetime.datetime(y, m, d, h, mi, s)
         return value
 
@@ -1781,6 +1797,9 @@ class SQLiteAdapter(BaseAdapter):
         def connect(dbpath=dbpath, driver_args=driver_args):
             return self.driver.Connection(dbpath, **driver_args)
         self.pool_connection(connect)
+        self.after_connection()
+
+    def after_connection(self):
         self.connection.create_function('web2py_extract', 2,
                                         SQLiteAdapter.web2py_extract)
         self.connection.create_function("REGEXP", 2,
@@ -1843,6 +1862,9 @@ class SpatiaLiteAdapter(SQLiteAdapter):
         def connect(dbpath=dbpath, driver_args=driver_args):
             return self.driver.Connection(dbpath, **driver_args)
         self.pool_connection(connect)
+        self.after_connection()
+
+    def after_connection(self):
         self.connection.enable_load_extension(True)
         # for Windows, rename libspatialite-2.dll as libspatialite.dll
         # Linux uses libspatialite.so
@@ -1930,6 +1952,9 @@ class JDBCSQLiteAdapter(SQLiteAdapter):
         def connect(dbpath=dbpath,driver_args=driver_args):
             return self.driver.connect(java.sql.DriverManager.getConnection('jdbc:sqlite:'+dbpath), **driver_args)
         self.pool_connection(connect)
+        self.after_connection()
+
+    def after_connection(self):
         # FIXME http://www.zentus.com/sqlitejdbc/custom_functions.html for UDFs
         self.connection.create_function('web2py_extract', 2, SQLiteAdapter.web2py_extract)
 
@@ -2029,6 +2054,9 @@ class MySQLAdapter(BaseAdapter):
         def connect(driver_args=driver_args):
             return self.driver.connect(**driver_args)
         self.pool_connection(connect)
+        self.after_connection()
+
+    def after_connection(self):
         self.execute('SET FOREIGN_KEY_CHECKS=1;')
         self.execute("SET sql_mode='NO_BACKSLASH_ESCAPES';")
 
@@ -2158,6 +2186,9 @@ class PostgreSQLAdapter(BaseAdapter):
         def connect(msg=msg,driver_args=driver_args):
             return self.driver.connect(msg,**driver_args)
         self.pool_connection(connect)
+        self.after_connection()
+
+    def after_connection(self):
         self.connection.set_client_encoding('UTF8')
         self.execute("SET standard_conforming_strings=on;")
 
@@ -2315,6 +2346,9 @@ class JDBCPostgreSQLAdapter(PostgreSQLAdapter):
         def connect(msg=msg,driver_args=driver_args):
             return self.driver.connect(*msg,**driver_args)
         self.pool_connection(connect)
+        self.after_connection()
+
+    def after_connection(self):
         self.connection.set_client_encoding('UTF8')
         self.execute('BEGIN;')
         self.execute("SET CLIENT_ENCODING TO 'UNICODE';")
@@ -2420,6 +2454,9 @@ class OracleAdapter(BaseAdapter):
         def connect(uri=uri,driver_args=driver_args):
             return self.driver.connect(uri,**driver_args)
         self.pool_connection(connect)
+        self.after_connection()
+
+    def after_connection(self):
         self.execute("ALTER SESSION SET NLS_DATE_FORMAT = 'YYYY-MM-DD HH24:MI:SS';")
         self.execute("ALTER SESSION SET NLS_TIMESTAMP_FORMAT = 'YYYY-MM-DD HH24:MI:SS';")
     oracle_fix = re.compile("[^']*('[^']*'[^']*)*\:(?P<clob>CLOB\('([^']+|'')*'\))")
@@ -2498,6 +2535,11 @@ class MSSQLAdapter(BaseAdapter):
     def PRIMARY_KEY(self,key):
         return 'PRIMARY KEY CLUSTERED (%s)' % key
 
+    def AGGREGATE(self, first, what):
+        if what == 'LENGTH':
+            what = 'LEN'
+        return "%s(%s)" % (what, self.expand(first))
+
     def select_limitby(self, sql_s, sql_f, sql_t, sql_w, sql_o, limitby):
         if limitby:
             (lmin, lmax) = limitby
@@ -2574,6 +2616,7 @@ class MSSQLAdapter(BaseAdapter):
             return self.driver.connect(cnxn,**driver_args)
         if not fake_connect:
             self.pool_connection(connect)
+            self.after_connection()
 
     def lastrowid(self,table):
         #self.execute('SELECT @@IDENTITY;')
@@ -2771,6 +2814,7 @@ class FireBirdAdapter(BaseAdapter):
         def connect(driver_args=driver_args):
             return self.driver.connect(**driver_args)
         self.pool_connection(connect)
+        self.after_connection()
 
     def create_sequence_and_triggers(self, query, table, **args):
         tablename = table._tablename
@@ -2839,6 +2883,7 @@ class FireBirdEmbeddedAdapter(FireBirdAdapter):
         def connect(driver_args=driver_args):
             return self.driver.connect(**driver_args)
         self.pool_connection(connect)
+        self.after_connection()
 
 
 class InformixAdapter(BaseAdapter):
@@ -2939,6 +2984,7 @@ class InformixAdapter(BaseAdapter):
         def connect(dsn=dsn,driver_args=driver_args):
             return self.driver.connect(dsn,**driver_args)
         self.pool_connection(connect)
+        self.after_connection()
 
     def execute(self,command):
         if command[-1:]==';':
@@ -3018,6 +3064,7 @@ class DB2Adapter(BaseAdapter):
         def connect(cnxn=cnxn,driver_args=driver_args):
             return self.driver.connect(cnxn,**driver_args)
         self.pool_connection(connect)
+        self.after_connection()
 
     def execute(self,command):
         if command[-1:]==';':
@@ -3239,6 +3286,7 @@ class TeradataAdapter(BaseAdapter):
         def connect(cnxn=cnxn,driver_args=driver_args):
             return self.driver.connect(cnxn,**driver_args)
         self.pool_connection(connect)
+        self.after_connection()
 
     # Similar to MSSQL, Teradata can't specify a range (for Pageby)
     def select_limitby(self, sql_s, sql_f, sql_t, sql_w, sql_o, limitby):
@@ -3323,6 +3371,7 @@ class IngresAdapter(BaseAdapter):
         def connect(driver_args=driver_args):
             return self.driver.connect(**driver_args)
         self.pool_connection(connect)
+        self.after_connection()
 
     def create_sequence_and_triggers(self, query, table, **args):
         # post create table auto inc code (if needed)
@@ -3450,6 +3499,7 @@ class SAPDBAdapter(BaseAdapter):
             return self.driver.Connection(user, password, database,
                                           host, **driver_args)
         self.pool_connection(connect)
+        self.after_connection()
 
     def lastrowid(self,table):
         self.execute("select %s.NEXTVAL from dual" % table._sequence_name)
@@ -3496,6 +3546,9 @@ class CubridAdapter(MySQLAdapter):
                     user=user,passwd=password,driver_args=driver_args):
             return self.driver.connect(host,port,db,user,passwd,**driver_args)
         self.pool_connection(connect)
+        self.after_connection()
+
+    def after_connection(self):
         self.execute('SET FOREIGN_KEY_CHECKS=1;')
         self.execute("SET sql_mode='NO_BACKSLASH_ESCAPES';")
 
@@ -3604,18 +3657,21 @@ class GoogleSQLAdapter(UseDatabaseStoredFile,MySQLAdapter):
         if not m:
             raise SyntaxError, "Invalid URI string in SQLDB: %s" % self._uri
         instance = credential_decoder(m.group('instance'))
-        db = credential_decoder(m.group('db'))
+        self.dbstring = db = credential_decoder(m.group('db'))
         driver_args['instance'] = instance
-        createdb = adapter_args.get('createdb',True)
+        self.createdb = createdb = adapter_args.get('createdb',True)
         if not createdb:
             driver_args['database'] = db
         def connect(driver_args=driver_args):
             return rdbms.connect(**driver_args)
         self.pool_connection(connect)
-        if createdb:
-            # self.execute('DROP DATABASE %s' % db)
-            self.execute('CREATE DATABASE IF NOT EXISTS %s' % db)
-            self.execute('USE %s' % db)
+        self.after_connection()
+
+    def after_connection(self):
+        if self.createdb:
+            # self.execute('DROP DATABASE %s' % self.dbstring)
+            self.execute('CREATE DATABASE IF NOT EXISTS %s' % self.dbstring)
+            self.execute('USE %s' % self.dbstring)
         self.execute("SET FOREIGN_KEY_CHECKS=1;")
         self.execute("SET sql_mode='NO_BACKSLASH_ESCAPES';")
 
@@ -4190,6 +4246,7 @@ class CouchDBAdapter(NoSQLAdapter):
         def connect(url=url,driver_args=driver_args):
             return couchdb.Server(url,**driver_args)
         self.pool_connection(connect,cursor=False)
+        self.after_connection()
 
     def create_table(self, table, migrate=True, fake_migrate=False, polymodel=None):
         if migrate:
@@ -4382,6 +4439,7 @@ class MongoDBAdapter(NoSQLAdapter):
                 else:
                     raise SyntaxError("This is not an official Mongodb uri (http://www.mongodb.org/display/DOCS/Connections) Error : %s" % inst)
         self.pool_connection(connect,cursor=False)
+        self.after_connection()
 
 
 
@@ -5107,8 +5165,9 @@ class IMAPAdapter(NoSQLAdapter):
 
             return connection
 
-        self.pool_connection(connect)
         self.db.define_tables = self.define_tables
+        self.pool_connection(connect)
+        # self.after_connection()
 
     def pool_connection(self, f, cursor=True):
         """
@@ -6837,6 +6896,7 @@ class Table(dict):
 
         :raises SyntaxError: when a supplied field is of incorrect type.
         """
+
         self._actual = False # set to True by define_table()
         self._tablename = tablename
         self._sequence_name = args.get('sequence_name',None) or \
@@ -6946,6 +7006,31 @@ class Table(dict):
     def update(self,*args,**kwargs):
         raise RuntimeError, "Syntax Not Supported"
 
+    def _enable_record_versioning(self,
+                                  archive_db=None,
+                                  archive_name = '%(tablename)s_archive',
+                                  current_record = 'current_record',
+                                  is_active = 'is_active'):
+        archive_db = archive_db or self._db
+        fieldnames = self.fields()
+        archive_name = archive_name % dict(tablename=self._tablename)
+        field_type = self if archive_db is self._db else 'integer'
+        archive_table = archive_db.define_table(
+            archive_name,
+            Field(current_record,field_type),
+            self)
+        self._before_update.append(
+            lambda qset,fs,at=archive_table,cn=current_record:
+                archive_record(qset,fs,at,cn))
+        if is_active and is_active in fieldnames:
+            self._before_delete.append(
+                lambda qset: qset.update(is_active=False))
+            newquery = lambda query, t=self: t.is_active == True
+            query = self._common_filter
+            if query:
+                newquery = query & newquery
+            self._common_filter = newquery
+                
     def _validate(self,**vars):
         errors = Row()
         for key,value in vars.items():
@@ -7280,6 +7365,16 @@ class Table(dict):
     def on(self, query):
         return Expression(self._db,self._db._adapter.ON,self,query)
 
+def archive_record(qset,fs,archive_table,current_record):
+    tablenames = qset.db._adapter.tables(qset.query)
+    if len(tablenames)!=1: raise RuntimeError, "cannot update join"
+    table = qset.db[tablenames[0]]
+    for row in qset.select():
+        fields = archive_table._filter_fields(row)
+        fields[current_record] = row.id
+        archive_table.insert(**fields)
+    return False
+        
 
 
 class Expression(object):
